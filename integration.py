@@ -39,7 +39,16 @@ class Integration:
             entity['children'] += self.get_entity(entity_type, entity_id, recursive=recursive)['children']
 
         return entity
-
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    def remove_block(self, block_id: str) -> dict:
+        if not block_id:
+            raise ValueError("Block ID cannot be empty")
+        try:
+            response = self._make_request("DELETE", f"/blocks/{block_id}")
+            return response
+        except requests.RequestException as e:
+            logging.error(f"Failed to remove block {block_id}: {str(e)}")
+            raise
     @retry(stop=stop_after_attempt(3), wait=wait_exponential())
     def get_block(self, block_id: str) -> Block:
         if not block_id:
