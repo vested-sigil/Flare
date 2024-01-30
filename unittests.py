@@ -1,7 +1,6 @@
 from Flare import integration
 from Flare.integration import Integration, portal
 
-portal = integration.Integration()
 
 def UnitTestOne():
   
