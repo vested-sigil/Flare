@@ -3,11 +3,10 @@ from Flare.integration import Integration, portal
 
 
 def UnitTestOne():
-  
-  root_page = portal.get_page(portal.rootuuid)
-  index_database = portal.get_database(portal.indexID)
-  print("Root Page:", root_page)
-  print("Index Database:", index_database)
+    root_page = portal.get_entity("pages", portal.rootuuid)
+    index_database = portal.get_entity("databases", portal.indexID)
+    print("Root Page:", root_page)
+
 
 def UnitTestTwo():
     test_block = {
