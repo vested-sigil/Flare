@@ -1,4 +1,4 @@
-current code is(from Flare import integration
+from Flare import integration
 from Flare.integration import Integration, portal
 
 root_page = portal.get_entity("pages", portal.rootuuid)
