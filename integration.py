@@ -1,148 +1,100 @@
-import requests
-import json
-import logging
-from google.colab import userdata
-from msgspec.json import decode
-from tenacity import retry, stop_after_attempt, wait_exponential
-from Flare.blocks import Block, deserialize_block, serialize_block
+from notion_client import Client
+from notion_client.helpers import collect_paginated_api
+import os
 
-# Improved logging setup
-logging.basicConfig(level=logging.INFO)
+def is_running_in_notebook():
+    try:
+        from IPython import get_ipython
+        if 'IPKernelApp' not in get_ipython().config:
+            raise ImportError("Not running in a notebook")
+        return True
+    except:
+        return False
+
+# Determine the environment and get the tokens and IDs
+if is_running_in_notebook():
+    from google.colab import userdata
+    token = userdata.get('token')
+    rootuuid = userdata.get('rootuuid')
+    indexID = userdata.get('indexID')
+else:
+    from dotenv import load_dotenv
+    load_dotenv()
+    token = os.getenv('NOTION_TOKEN')
+    rootuuid = os.getenv('ROOT_UUID')
+    indexID = os.getenv('INDEX_ID')
+
+# Initialize the Notion client with the token
+notion = Client(auth=token)
+
 
 class Integration:
-    def __init__(self, token, indexID, rootuuid, config):
-        self.token = token
-        self.indexID = indexID
-        self.rootuuid = rootuuid
-        self.default_page_id = self.rootuuid
-        self.base_url = config['API_BASE_URL']
-        self.headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Notion-Version": config['API_VERSION']
+    def __init__(self, token, rootuuid, indexID):
+        self.client = Client(auth=token)
+        self.home = rootuuid
+        self.index = indexID
+        self.cache = {}
+
+    def retrieve_home_page(self):
+        return self.client.pages.retrieve(self.home)
+
+    def check_index(self):
+        return self.client.databases.retrieve(self.index)
+
+    def query_database_with_pagination(self, database_id, filter=None, sorts=None):
+        return collect_paginated_api(
+            self.client.databases.query, database_id=database_id, filter=filter, sorts=sorts
+        )
+
+    # Example method to handle rich content like images
+    def add_image_to_page(self, page_id, image_url):
+        image_block = {
+            "type": "image",
+            "image": {"type": "external", "external": {"url": image_url}}
         }
+        return self.client.blocks.children.append(page_id, children=[image_block])
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def _make_request(self, method: str, endpoint: str, params=None, json=None) -> dict:
-        try:
-            response = requests.request(method, self.base_url + endpoint, headers=self.headers, params=params, json=json)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logging.error(f"Failed to make request {method} {endpoint}: {str(e)}")
-            raise
+    # Cache management methods
+    def get_cached_data(self, key):
+        return self.cache.get(key)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def get_entity(self, entity_type: str, entity_id: str, recursive=False) -> dict:
-        entity = self._make_request("GET", f"/{entity_type}/{entity_id}")
+    def set_cache_data(self, key, value):
+        self.cache[key] = value
 
-        if recursive and 'has_more' in entity and entity['has_more']:
-            entity['children'] += self.get_entity(entity_type, entity_id, recursive=recursive)['children']
+    # Additional methods for page and block manipulation
+    def delete_page(self, page_id):
+        return self.client.pages.delete(page_id)
 
-        return entity
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def remove_block(self, block_id: str) -> dict:
-        if not block_id:
-            raise ValueError("Block ID cannot be empty")
-        try:
-            response = self._make_request("DELETE", f"/blocks/{block_id}")
-            return response
-        except requests.RequestException as e:
-            logging.error(f"Failed to remove block {block_id}: {str(e)}")
-            raise
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def get_block(self, block_id: str) -> Block:
-        if not block_id:
-            raise ValueError("Block ID cannot be empty")
-        try:
-            response = requests.get(f"{self.base_url}/blocks/{block_id}", headers=self.headers)
-            response.raise_for_status()
-            return decode(response.content, type=Block)
-        except requests.RequestException as e:
-            logging.error(f"Failed to get block {block_id}: {str(e)}")
-            raise
+    def retrieve_user(self, user_id):
+        return self.client.users.retrieve(user_id)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def update_row(self, database_id: str, page_id: str, row_properties: dict) -> dict:
-        if not database_id or not page_id:
-            raise ValueError("Database ID and Page ID cannot be empty")
-        try:
-            response = self._make_request("PATCH", f"/pages/{page_id}", json={"properties": row_properties})
-            return response
-        except requests.RequestException as e:
-            logging.error(f"Failed to update row in database {database_id}: {str(e)}")
-            raise
+    def search(self, query):
+        return self.client.search(query=query)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def create_page(self, parent_id: str, title: str, content=None) -> dict:
-        payload = {
-            "parent": {"page_id": parent_id},
-            "properties": {"title": {"title": [{"text": {"content": title}}]}},
-        }
-        if content:
-            payload["children"] = content
-        response = self._make_request("POST", "/pages", json=payload)
-        return response
+    def update_block(self, block_id, block_content):
+        return self.client.blocks.update(block_id, block=block_content)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def append_block_children(self, block_id: str, children: list) -> dict:
-        response = self._make_request("PATCH", f"/blocks/{block_id}/children", json={"children": children})
-        return response
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def update_block(self, block_id: str, new_content: dict) -> Block:
-        if not block_id:
-            raise ValueError("Block ID cannot be empty")
-        
-        try:
-            response = self._make_request("PATCH", f"/blocks/{block_id}", json={"block": new_content})
-            return deserialize_block(response)
-        except requests.RequestException as e:
-            logging.error(f"Failed to update block {block_id}: {str(e)}")
-            raise
+    def list_block_children(self, block_id):
+        return self.client.blocks.children.list(block_id)
 
+    def delete_all_pages_in_database(self, database_id):
+        # First, query all pages in the database
+        pages = self.query_database_with_pagination(database_id)
 
-    def query_database(self, database_id: str, query: dict) -> dict:
-        if not database_id:
-            raise ValueError("Database ID cannot be empty")
-        
-        try:
-            response = self._make_request("POST", f"/databases/{database_id}/query", json=query)
-            return response
-        except requests.RequestException as e:
-            logging.error(f"Failed to query database {database_id}: {str(e)}")
-            raise
+        # Then, iterate over each page and delete it
+        for page in pages:
+            self.delete_page(page["id"])
 
-    def _get_paginated_results(self, method: str, endpoint: str, params=None, json=None):
-        result_list = []
-        params = params or {}
-        while True:
-            response = self._make_request(method, endpoint, params=params, json=json)
-            result_list.extend(response.get('results', []))
-            if not response.get('has_more', False):
-                break
-            params['start_cursor'] = response['next_cursor']
-        return result_list
+        return "All pages deleted from the database."
 
-    def _make_request(self, method: str, endpoint: str, params=None, json=None) -> dict:
-        try:
-            response = requests.request(method, self.base_url + endpoint, headers=self.headers, params=params, json=json)
-            response.raise_for_status()
-            return response.json()
-        except requests.HTTPError as e:
-            logging.error(f"HTTP Error for {method} {endpoint}: {e.response.status_code} {e.response.text}")
-            raise
-        except requests.RequestException as e:
-            logging.error(f"Request Error for {method} {endpoint}: {str(e)}")
-            raise
+    def append_block_children(self, block_id, children):
+        return self.client.blocks.children.append(block_id, children=children)
 
-# Example usage
-config = {
-    'API_BASE_URL': "https://api.notion.com/v1",
-    'API_VERSION': "2022-06-28"
-}
-portal = Integration(token=userdata.get('token'), indexID=userdata.get('indexID'), rootuuid=userdata.get('rootuuid'), config=config)
+    def retrieve_block(self, block_id):
+        return self.client.blocks.retrieve(block_id)
 
-# Example function call
-rootpage = portal.get_entity("pages", portal.default_page_id)
-print("Root page of integration")
-print(json.dumps(rootpage, indent=4))
+# Instantiate Integration class with the retrieved token and IDs
+integration = Integration(token, rootuuid, indexID)
+
+# Example usage of the Integration class
+home_page = integration.retrieve_home_page()
