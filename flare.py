@@ -1,4 +1,4 @@
-from helper import load_config, save_config, grab, update_cells
+from Flare.helper import load_config, save_config, grab, update_cells
 
 class Flare:
     def __init__(self, signal_type, config_file='config.json'):
