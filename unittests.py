@@ -1,10 +1,11 @@
 from Flare import integration
 from Flare.integration import Integration, portal
 
+root_page = portal.get_entity("pages", portal.rootuuid)
+index_database = portal.get_entity("databases", portal.indexID)
 
 def UnitTestOne():
-    root_page = portal.get_entity("pages", portal.rootuuid)
-    index_database = portal.get_entity("databases", portal.indexID)
+    
     print("Root Page:", root_page)
 
 
@@ -22,6 +23,6 @@ def UnitTestTwo():
             ]
         }
     }
-    portal.append_block_children(rootpage["id"], [test_block])
+    portal.append_block_children(portal.rootuuid, [test_block])
 
      
