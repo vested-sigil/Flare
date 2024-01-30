@@ -4,7 +4,7 @@ import logging
 from google.colab import userdata
 from msgspec.json import decode
 from tenacity import retry, stop_after_attempt, wait_exponential
-from Flare.blocks import Block, extract_info
+from Flare.blocks import Block, deserialize_block, serialize_block
 
 # Improved logging setup
 logging.basicConfig(level=logging.INFO)
@@ -87,6 +87,53 @@ class Integration:
     def append_block_children(self, block_id: str, children: list) -> dict:
         response = self._make_request("PATCH", f"/blocks/{block_id}/children", json={"children": children})
         return response
+    
+    @retry(stop=stop_after_attempt(3), wait_exwait_exponential())
+    def update_block(self, block_id: str, new_content: dict) -> Block:
+        if not block_id:
+            raise ValueError("Block ID cannot be empty")
+        
+        try:
+            response = self._make_request("PATCH", f"/blocks/{block_id}", json={"block": new_content})
+            return deserialize_block(response)
+        except requests.RequestException as e:
+            logging.error(f"Failed to update block {block_id}: {str(e)}")
+            raise
+
+    @retry(stop=stop_after_attempt(3), wait_exponential())
+    def query_database(self, database_id: str, query: dict) -> dict:
+        if not database_id:
+            raise ValueError("Database ID cannot be empty")
+        
+        try:
+            response = self._make_request("POST", f"/databases/{database_id}/query", json=query)
+            return response
+        except requests.RequestException as e:
+            logging.error(f"Failed to query database {database_id}: {str(e)}")
+            raise
+
+    def _get_paginated_results(self, method: str, endpoint: str, params=None, json=None):
+        result_list = []
+        params = params or {}
+        while True:
+            response = self._make_request(method, endpoint, params=params, json=json)
+            result_list.extend(response.get('results', []))
+            if not response.get('has_more', False):
+                break
+            params['start_cursor'] = response['next_cursor']
+        return result_list
+
+    def _make_request(self, method: str, endpoint: str, params=None, json=None) -> dict:
+        try:
+            response = requests.request(method, self.base_url + endpoint, headers=self.headers, params=params, json=json)
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as e:
+            logging.error(f"HTTP Error for {method} {endpoint}: {e.response.status_code} {e.response.text}")
+            raise
+        except requests.RequestException as e:
+            logging.error(f"Request Error for {method} {endpoint}: {str(e)}")
+            raise
 
 # Example usage
 config = {
