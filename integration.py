@@ -100,7 +100,7 @@ class Integration:
             logging.error(f"Failed to update block {block_id}: {str(e)}")
             raise
 
-    @retry(stop=stop_after_attempt(3), wait_exponential())
+
     def query_database(self, database_id: str, query: dict) -> dict:
         if not database_id:
             raise ValueError("Database ID cannot be empty")
