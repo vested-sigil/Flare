@@ -3,6 +3,17 @@ from Flare.integration import Integration, portal
 
 root_page = portal.get_entity("pages", portal.rootuuid)
 index_database = portal.get_entity("databases", portal.indexID)
+testblock = {'id': None}
+
+def create_test_block():
+    test_block_content = {
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{"type": "text", "text": {"content": "test block"}}]
+        }
+    }
+    response = portal.append_block_children(portal.rootuuid, [test_block_content])
+    return response['results'][0]['id']
 
 def UnitTestOne():
     # Assert that the root page and index database were retrieved successfully
@@ -11,41 +22,42 @@ def UnitTestOne():
     print("Root Page:", root_page)
 
 def UnitTestTwo():
-    test_block = {
+    # Create a single test block
+    test_block_id = create_test_block()
+
+    # Modify the test block
+    modified_content = "modified test"
+    modified_block = {
         "type": "paragraph",
         "paragraph": {
-            "rich_text": [
-                {
-                    "type": "text",
-                    "text": {
-                        "content": "test"
-                    }
-                }
-            ]
+            "rich_text": [{"type": "text", "text": {"content": modified_content}}]
         }
     }
-    testblock = {'id': None}
-    
-    for _ in range(3):
-        # Append the test block to the root page
-        response = portal.append_block_children(portal.rootuuid, [test_block])
+    portal.update_block(test_block_id, modified_block)
 
-        # Assert that the block was added successfully
-        assert response is not None
-        assert response["object"] == "list"
-        assert len(response["results"]) > 0
-        assert response["results"][0]["object"] == "block"
+    # Retrieve and assert the modified block's content
+    modified_block_retrieved = portal.get_block(test_block_id)
+    assert modified_block_retrieved is not None
+    assert modified_block_retrieved.object == "block"
+    assert modified_block_retrieved.id == test_block_id
+    assert "modified test" in modified_block_retrieved.content  # Assuming 'content' is the correct field
 
-        # Store the UUID of the appended block
-        if response["results"][0]["id"] == portal.rootuuid:
-            # If the appended block is the root block, find the UUID of the last child
-            children = portal.get_entity("block", portal.rootuuid, recursive=True)['children']
-            assert len(children) > 0
-            testblock['id'] = children[-1]["id"]
-        else:
-            testblock['id'] = response["results"][0]["id"]
+    # Append a nested block to the modified block
+    nested_block = {
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{"type": "text", "text": {"content": "nested test"}}]
+        }
+    }
+    portal.append_block_children(test_block_id, [nested_block])
 
-        # Clean up: Remove the test block if it's not the root block
-        if testblock['id'] != portal.rootuuid:
-            portal.remove_block(testblock['id'])
+    # Retrieve and assert the nested block's presence
+    block_with_nested = portal.get_block(test_block_id)
+    assert block_with_nested is not None
+    assert "nested test" in block_with_nested.content  # Assuming 'content' includes nested block content
 
+    # Remove the test block
+    remove_response = portal.remove_block(test_block_id)
+    assert remove_response is not None
+    assert remove_response["object"] == "block"
+    assert remove_response["deleted"] == True
