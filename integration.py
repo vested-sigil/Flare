@@ -88,7 +88,7 @@ class Integration:
         response = self._make_request("PATCH", f"/blocks/{block_id}/children", json={"children": children})
         return response
     
-    @retry(stop=stop_after_attempt(3), wait_exwait_exponential())
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
     def update_block(self, block_id: str, new_content: dict) -> Block:
         if not block_id:
             raise ValueError("Block ID cannot be empty")
