@@ -24,8 +24,7 @@ def UnitTestTwo():
             ]
         }
     }
-    
-     response = portal.append_block_children(portal.rootuuid, [test_block])
+    response = portal.append_block_children(portal.rootuuid, [test_block])
 
 # Assert that the block was added successfully
     assert response is not None
