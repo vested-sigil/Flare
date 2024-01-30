@@ -1,127 +1,92 @@
 import requests
+import json
 import logging
-from requests.exceptions import RequestException
-from tenacity import retry, stop_after_attempt, wait_exponential
 from google.colab import userdata
-from blocks import Block, extract_info, serialize_block, deserialize_block
+from msgspec.json import decode
+from tenacity import retry, stop_after_attempt, wait_exponential
+from Flare.blocks import Block, extract_info
 
-# Constants for API methods and endpoints
-METHOD_GET = "GET"
-ENDPOINT_PAGES = "/pages/"
-ENDPOINT_DATABASES = "/databases/"
-ENDPOINT_BLOCKS = "/blocks/"
-
-# Setting up basic logging
-logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s')
+# Improved logging setup
+logging.basicConfig(level=logging.INFO)
 
 class Integration:
-    def __init__(self):
-        self.token = userdata.get('token')
-        self.indexID = userdata.get('indexID')
-        self.rootuuid = userdata.get('rootuuid')
-        self.base_url = "https://api.notion.com/v1"
+    def __init__(self, token, indexID, rootuuid, config):
+        self.token = token
+        self.indexID = indexID
+        self.rootuuid = rootuuid
+        self.default_page_id = self.rootuuid
+        self.base_url = config['API_BASE_URL']
         self.headers = {
             "Authorization": f"Bearer {self.token}",
-            "Notion-Version": "2022-06-28"
+            "Notion-Version": config['API_VERSION']
         }
 
-    def _log_request(self, method, url, params=None, body=None):
-        logging.debug(f"Making {method} request to {url} | Params: {params} | Body: {body}")
-
-    def _log_response(self, response):
-        logging.debug(f"Received response - Status: {response.status_code} | Content: {response.text}")
-
-    def _make_request(self, method, endpoint, params=None, json=None):
-        url = self.base_url + endpoint
-        self._log_request(method, url, params, json)
-        try:
-            response = requests.request(method, url, headers=self.headers, params=params, json=json)
-            response.raise_for_status()
-            self._log_response(response)
-            return response.json()
-        except RequestException as req_err:
-            logging.error(f"Request error: {req_err} | URL: {url}")
-            raise
-        except Exception as err:
-            logging.error(f"Unexpected error: {err} | URL: {url}")
-            raise
-    def get_and_process_block(self, block_id: str) -> dict:
-        """
-        Retrieves a block using its ID and processes it to extract information.
-
-        :param block_id: The ID of the block to retrieve and process.
-        :return: A dictionary containing processed information about the block.
-        """
-        try:
-            # Retrieve the block data using the existing get_block method
-            block = self.get_block(block_id)
-
-            # Process the block using functionality from the blocks module
-            # For demonstration, we use the extract_info function
-            processed_info = extract_info(block)
-
-            return processed_info
-
-        except Exception as e:
-            logging.error(f"Error in get_and_process_block: {e}")
-            return {"error": str(e)}
     @retry(stop=stop_after_attempt(3), wait=wait_exponential())
-    def get_page(self, page_id: str) -> dict:
-        return self._make_request(METHOD_GET, ENDPOINT_PAGES + page_id)
+    def _make_request(self, method: str, endpoint: str, params=None, json=None) -> dict:
+        try:
+            response = requests.request(method, self.base_url + endpoint, headers=self.headers, params=params, json=json)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"Failed to make request {method} {endpoint}: {str(e)}")
+            raise
 
-    def get_database(self, database_id: str) -> dict:
-        return self._make_request(METHOD_GET, ENDPOINT_DATABASES + database_id)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    def get_entity(self, entity_type: str, entity_id: str, recursive=False) -> dict:
+        entity = self._make_request("GET", f"/{entity_type}/{entity_id}")
 
+        if recursive and 'has_more' in entity and entity['has_more']:
+            entity['children'] += self.get_entity(entity_type, entity_id, recursive=recursive)['children']
+
+        return entity
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
     def get_block(self, block_id: str) -> Block:
-        block_data = self._make_request(METHOD_GET, ENDPOINT_BLOCKS + block_id)
-        return deserialize_block(block_data)
+        if not block_id:
+            raise ValueError("Block ID cannot be empty")
+        try:
+            response = requests.get(f"{self.base_url}/blocks/{block_id}", headers=self.headers)
+            response.raise_for_status()
+            return decode(response.content, type=Block)
+        except requests.RequestException as e:
+            logging.error(f"Failed to get block {block_id}: {str(e)}")
+            raise
 
-    def update_block(self, block_id: str, block: Block) -> dict:
-        serialized_block = serialize_block(block)
-        return self._make_request("PATCH", ENDPOINT_BLOCKS + block_id, json=serialized_block)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    def update_row(self, database_id: str, page_id: str, row_properties: dict) -> dict:
+        if not database_id or not page_id:
+            raise ValueError("Database ID and Page ID cannot be empty")
+        try:
+            response = self._make_request("PATCH", f"/pages/{page_id}", json={"properties": row_properties})
+            return response
+        except requests.RequestException as e:
+            logging.error(f"Failed to update row in database {database_id}: {str(e)}")
+            raise
 
-    def create_page(self, parent_id: str, title: str, content: list[Block] = None) -> dict:
-        children = [serialize_block(block) for block in content] if content else []
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    def create_page(self, parent_id: str, title: str, content=None) -> dict:
         payload = {
-            "parent": {"database_id": parent_id},
-            "properties": {"title": [{"type": "text", "text": {"content": title}}]},
-            "children": children
+            "parent": {"page_id": parent_id},
+            "properties": {"title": {"title": [{"text": {"content": title}}]}},
         }
-        return self._make_request("POST", ENDPOINT_PAGES, json=payload)
+        if content:
+            payload["children"] = content
+        response = self._make_request("POST", "/pages", json=payload)
+        return response
 
-    def query_database(self, database_id: str, filter: dict = None, sorts: list = None) -> dict:
-        query = {"filter": filter, "sorts": sorts} if filter or sorts else {}
-        return self._make_request("POST", ENDPOINT_DATABASES + database_id + "/query", json=query)
-
-    def fetch_paginated_data(self, endpoint, params=None, page_size=100):
-        """
-        Fetches data from a given Notion API endpoint with cursor-based pagination.
-        :param endpoint: The API endpoint to fetch the data from.
-        :param params: Additional parameters to pass in the request.
-        :param page_size: Number of items to fetch per page.
-        :return: A list of all items fetched from the endpoint.
-        """
-        if params is None:
-            params = {}
-
-        all_data = []
-        has_more = True
-        start_cursor = None
-
-        while has_more:
-            paginated_params = {**params, "page_size": page_size, "start_cursor": start_cursor}
-            response = self._make_request("GET", endpoint, params=paginated_params)
-            all_data.extend(response.get('results', []))
-            
-            has_more = response.get('has_more', False)
-            start_cursor = response.get('next_cursor')
-
-        return all_data
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    def append_block_children(self, block_id: str, children: list) -> dict:
+        response = self._make_request("PATCH", f"/blocks/{block_id}/children", json={"children": children})
+        return response
 
 # Example usage
-# integration = Integration()
-# root_page = integration.get_page(integration.rootuuid)
-# index_database = integration.get_database(integration.indexID)
+config = {
+    'API_BASE_URL': "https://api.notion.com/v1",
+    'API_VERSION': "2022-06-28"
+}
+portal = Integration(token=userdata.get('token'), indexID=userdata.get('indexID'), rootuuid=userdata.get('rootuuid'), config=config)
 
-# print("Root Page:", root_page)
-# print("Index Database:", index_database)
+# Example function call
+rootpage = portal.get_entity("pages", portal.default_page_id)
+print("Root page of integration")
+print(json.dumps(rootpage, indent=4))
